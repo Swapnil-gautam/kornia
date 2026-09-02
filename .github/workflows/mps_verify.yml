@@ -1,5 +1,8 @@
 name: MPS verify fix (fork only — not for upstream)
 
+# Mirrors kornia's blocking MPS PR job: torch 2.9.1, --device=mps, and deliberately NO
+# PYTORCH_ENABLE_MPS_FALLBACK, so a green run here means the change keeps that job green.
+
 on:
   workflow_dispatch:
   push:
@@ -9,11 +12,6 @@ jobs:
   verify:
     runs-on: macos-15
     timeout-minutes: 25
-    env:
-      # torch 2.9 lacks aten::grid_sampler_2d_backward on MPS entirely (pre-existing, unrelated
-      # to kornia#4032, which is a forward-pass crash). Let backward fall back to CPU so the
-      # gradient assertions can run; the forward path still executes on MPS.
-      PYTORCH_ENABLE_MPS_FALLBACK: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -32,33 +30,34 @@ jobs:
             python -m pip install torch==${{ matrix.torch-version }}
           fi
           python -m pip install -e . pytest
-      - name: Issue 4032 repro must now pass on MPS
+      - name: Issue 4032 forward repro must now pass on MPS
         run: |
           python - <<'EOF'
           import torch
-          from kornia.geometry.transform import warp_affine, warp_perspective, remap
+          from kornia.geometry.transform import remap, warp_affine, warp_perspective
+
           assert torch.backends.mps.is_available()
           device = "mps"
           print("torch", torch.__version__, "on", device)
 
-          src = torch.rand(1, 1, 4, 4, device=device, requires_grad=True)
-          M = torch.eye(2, 3, device=device)[None].requires_grad_()
-          for dsize in [(0, 4), (3, 0)]:
+          src = torch.rand(1, 1, 4, 4, device=device)
+          M = torch.eye(2, 3, device=device)[None]
+          for dsize in [(0, 4), (3, 0), (0, 0)]:
               out = warp_affine(src, M, dsize)
               assert out.shape == (1, 1, *dsize), out.shape
-              out.sum().backward()
-              assert src.grad is not None and M.grad is not None
               print("warp_affine OK", dsize)
 
           P = torch.eye(3, device=device)[None]
-          out = warp_perspective(src.detach(), P, (0, 4))
-          assert out.shape == (1, 1, 0, 4)
+          assert warp_perspective(src, P, (0, 4)).shape == (1, 1, 0, 4)
           print("warp_perspective OK")
 
-          img = torch.rand(1, 1, 4, 4, device=device)
-          out = remap(img, torch.zeros(1, 0, 4, device=device), torch.zeros(1, 0, 4, device=device))
-          assert out.shape == (1, 1, 0, 4)
+          zeros = torch.zeros(1, 0, 4, device=device)
+          assert remap(src, zeros, zeros).shape == (1, 1, 0, 4)
           print("remap OK")
+
+          batched = torch.rand(2, 1, 4, 4, device=device)
+          assert warp_affine(batched, M.expand(2, 2, 3), (0, 4)).shape == (2, 1, 0, 4)
+          print("batched OK")
           EOF
-      - name: Empty-warp test subset on MPS
-        run: python -m pytest tests/geometry/transform/test_imgwarp.py -k "empty" --device=mps -q
+      - name: Full imgwarp suite on MPS (kornia CI parity, no fallback)
+        run: python -m pytest tests/geometry/transform/test_imgwarp.py --device=mps -q
