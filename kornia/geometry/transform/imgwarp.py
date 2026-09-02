@@ -132,13 +132,12 @@ def _empty_warp_output_2d(
     if expand_transform_batch and transform.shape[0] == 1 and src.shape[0] > 1:
         out_batch = src.shape[0]
 
-    # ``grid_sample`` must never receive a zero-element operand here: MPS on torch <= 2.9 hits an
-    # internal assert (``[srcBuf length] > 0 ... Placeholder tensor is empty!``) for a zero-element
-    # grid or batch, even against a 1x1 source (kornia#4032; fixed upstream by torch 2.14, but
-    # kornia supports torch >= 2.0). Sample connected 1x1 stand-ins — clamping every zero dimension
-    # to one — so grid_sample still validates batches, dtypes, devices, and modes, then derive the
-    # empty destination from the sampled result to keep the autograd links to ``src`` and
-    # ``transform``.
+    # ``grid_sample`` must never receive a zero-element operand here. MPS before torch 2.14 raises
+    # ``[srcBuf length] > 0 ... Placeholder tensor is empty!`` for a zero-element grid or batch, even
+    # against a 1x1 source, and kornia supports torch >= 2.0. Sample connected 1x1 stand-ins --
+    # clamping every zero dimension to one, keeping the non-zero ones so batch, dtype, device and
+    # mode validation still runs -- then expand the sampled result to the empty destination, which
+    # keeps the autograd links to ``src`` and ``transform``.
     grid_zero = transform.reshape(-1)[:1].sum() * 0.0
     grid = grid_zero.reshape(1, 1, 1, 1).expand(max(out_batch, 1), max(dsize[0], 1), max(dsize[1], 1), 2)
 
