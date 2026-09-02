@@ -1,0 +1,28 @@
+name: MPS grid_sample probe (fork only — not for upstream)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [probe/mps-grid-sample]
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install torch and kornia
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch
+          python -m pip install -e . --no-deps
+          python -m pip install packaging
+      - name: MPS availability
+        run: python -c "import torch; print('mps available:', torch.backends.mps.is_available())"
+      - name: Run grid_sample probe matrix
+        run: python probe_mps_grid_sample.py
+      - name: Run kornia issue 4032 repro
+        run: python probe_kornia_4032.py
