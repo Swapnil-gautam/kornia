@@ -9,6 +9,11 @@ jobs:
   verify:
     runs-on: macos-15
     timeout-minutes: 25
+    env:
+      # torch 2.9 lacks aten::grid_sampler_2d_backward on MPS entirely (pre-existing, unrelated
+      # to kornia#4032, which is a forward-pass crash). Let backward fall back to CPU so the
+      # gradient assertions can run; the forward path still executes on MPS.
+      PYTORCH_ENABLE_MPS_FALLBACK: "1"
     strategy:
       fail-fast: false
       matrix:
