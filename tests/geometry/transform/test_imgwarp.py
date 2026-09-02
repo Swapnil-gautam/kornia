@@ -27,17 +27,6 @@ from kornia.core.utils import _torch_inverse_cast
 from testing.base import BaseTester
 
 
-def _skip_if_mps_empty_grid_sample(device):
-    """Skip when a zero-element sampling grid cannot reach ``grid_sample``.
-
-    PyTorch's MPS backend raises ``[srcBuf length] > 0 INTERNAL ASSERT FAILED ... Placeholder
-    tensor is empty!`` for a zero-element ``grid_sample`` argument, so an empty warp destination
-    is unreachable there regardless of how kornia builds it.
-    """
-    if device.type == "mps":
-        pytest.skip("MPS grid_sample asserts on zero-element tensors")
-
-
 class DummyNNModule(torch.nn.Module):
     def __init__(self, h: int, w: int, align_corners: bool, padding_mode: str):
         super().__init__()
@@ -53,7 +42,6 @@ class DummyNNModule(torch.nn.Module):
 @pytest.mark.parametrize("align_corners", [True, False])
 @pytest.mark.parametrize("padding_mode", ["zeros", "fill"])
 def test_empty_destination_is_autograd_connected(op_name, dsize, align_corners, padding_mode, device, dtype):
-    _skip_if_mps_empty_grid_sample(device)
     src = torch.rand(1, 3, 3, 4, device=device, dtype=dtype, requires_grad=True)
     if op_name == "warp_affine":
         transform = torch.eye(2, 3, device=device, dtype=dtype).unsqueeze(0).requires_grad_()
@@ -79,7 +67,6 @@ def test_empty_destination_is_autograd_connected(op_name, dsize, align_corners, 
 
 @pytest.mark.parametrize("op_name", ["warp_affine", "warp_perspective"])
 def test_empty_source_policy(op_name, device, dtype):
-    _skip_if_mps_empty_grid_sample(device)
     src = torch.empty(1, 3, 0, 4, device=device, dtype=dtype, requires_grad=True)
     if op_name == "warp_affine":
         transform = torch.eye(2, 3, device=device, dtype=dtype).unsqueeze(0).requires_grad_()
@@ -794,7 +781,6 @@ class TestRemap(BaseTester):
 
     @pytest.mark.parametrize("source_empty", [False, True])
     def test_empty_maps_return_autograd_connected_output(self, source_empty, device, dtype):
-        _skip_if_mps_empty_grid_sample(device)
         source_height = 0 if source_empty else 3
         image = torch.empty(1, 2, source_height, 5, device=device, dtype=dtype, requires_grad=True)
         map_x = torch.empty(1, 0, 5, device=device, dtype=dtype, requires_grad=True)
