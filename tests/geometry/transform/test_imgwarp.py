@@ -50,7 +50,7 @@ class DummyNNModule(torch.nn.Module):
 
 @pytest.mark.parametrize("op_name", ["warp_affine", "warp_perspective"])
 @pytest.mark.parametrize("dsize", [(0, 4), (3, 0), (0, 0)])
-@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("batch", [0, 1, 2])
 def test_empty_destination_forward_runs_on_every_backend(op_name, dsize, batch, device, dtype):
     """An empty destination must not hand ``grid_sample`` a zero-element operand.
 
@@ -68,6 +68,61 @@ def test_empty_destination_forward_runs_on_every_backend(op_name, dsize, batch, 
     assert out.shape == (batch, 3, *dsize)
     assert out.numel() == 0
     assert out.device.type == device.type and out.dtype == dtype
+
+
+@pytest.mark.parametrize("op_name", ["warp_affine", "warp_perspective", "remap"])
+@pytest.mark.parametrize(("src_batch", "transform_batch"), [(0, 1), (1, 0), (0, 0), (2, 1), (1, 2), (2, 2)])
+def test_empty_destination_matches_nonempty_batch_semantics(op_name, src_batch, transform_batch, device, dtype):
+    """An empty destination broadcasts and rejects batch pairings exactly as the non-empty path.
+
+    The three operations disagree on purpose -- ``warp_perspective`` requires equal batches,
+    ``warp_affine`` expands a singleton matrix only to a source batch above one, and ``remap``
+    expands a singleton map batch to the image batch unconditionally -- so the empty path is
+    pinned against whatever the non-empty call does rather than against a hardcoded expectation.
+    """
+    if device.type == "mps" and 0 in (src_batch, transform_batch) and torch_version_lt(2, 14, 0):
+        pytest.skip("MPS grid_sample asserts on a zero-element batch before torch 2.14")
+
+    def run(empty: bool) -> torch.Tensor:
+        src = torch.rand(src_batch, 2, 3, 4, device=device, dtype=dtype)
+        if op_name == "remap":
+            maps = torch.zeros(transform_batch, 0 if empty else 3, 4, device=device, dtype=dtype)
+            return kornia.geometry.remap(src, maps, maps)
+        rows = 2 if op_name == "warp_affine" else 3
+        transform = torch.eye(3, device=device, dtype=dtype)[:rows].expand(transform_batch, rows, 3)
+        return getattr(kornia.geometry.transform, op_name)(src, transform, (0, 4) if empty else (3, 4))
+
+    try:
+        expected_batch = run(empty=False).shape[0]
+    except RuntimeError:
+        with pytest.raises(RuntimeError):
+            run(empty=True)
+        return
+
+    assert run(empty=True).shape[0] == expected_batch
+
+
+def test_empty_destination_samples_a_constant_1x1_stand_in(device, dtype, monkeypatch):
+    """The sampled stand-in stays 1x1 however large the non-zero side of the destination is.
+
+    The empty result discards whatever was sampled, so materializing ``dsize``-many samples would
+    make an empty warp cost more than a real one -- unbounded, for a result with no elements.
+    """
+    sampled_grids = []
+    real_grid_sample = torch.nn.functional.grid_sample
+
+    def spy(input, grid, **kwargs):
+        sampled_grids.append(tuple(grid.shape))
+        return real_grid_sample(input, grid, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "grid_sample", spy)
+    src = torch.rand(1, 3, 8, 8, device=device, dtype=dtype)
+    transform = torch.eye(2, 3, device=device, dtype=dtype).unsqueeze(0)
+
+    out = kornia.geometry.transform.warp_affine(src, transform, (0, 2_000_000))
+
+    assert out.shape == (1, 3, 0, 2_000_000)
+    assert sampled_grids and all(shape == (1, 1, 1, 2) for shape in sampled_grids)
 
 
 @pytest.mark.parametrize("op_name", ["warp_affine", "warp_perspective"])
