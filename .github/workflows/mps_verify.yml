@@ -1,0 +1,62 @@
+name: MPS verify fix (fork only)
+
+# Mirrors kornia's blocking MPS PR job: torch 2.9.1, --device=mps, and deliberately NO
+# PYTORCH_ENABLE_MPS_FALLBACK, so a green run here means the change keeps that job green.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [verify/mps-rebased]
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ["2.9.1", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install torch ${{ matrix.torch-version }} and kornia
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.torch-version }}" = "latest" ]; then
+            python -m pip install torch
+          else
+            python -m pip install torch==${{ matrix.torch-version }}
+          fi
+          python -m pip install -e . pytest
+      - name: Issue 4032 forward repro must pass on MPS
+        run: |
+          python - <<'EOF'
+          import torch
+          from kornia.geometry.transform import remap, warp_affine, warp_perspective
+
+          assert torch.backends.mps.is_available()
+          device = "mps"
+          print("torch", torch.__version__, "on", device)
+
+          src = torch.rand(1, 1, 4, 4, device=device)
+          M = torch.eye(2, 3, device=device)[None]
+          for dsize in [(0, 4), (3, 0), (0, 0)]:
+              assert warp_affine(src, M, dsize).shape == (1, 1, *dsize)
+              print("warp_affine OK", dsize)
+
+          P = torch.eye(3, device=device)[None]
+          assert warp_perspective(src, P, (0, 4)).shape == (1, 1, 0, 4)
+          print("warp_perspective OK")
+
+          zeros = torch.zeros(1, 0, 4, device=device)
+          assert remap(src, zeros, zeros).shape == (1, 1, 0, 4)
+          print("remap OK")
+
+          batched = torch.rand(2, 1, 4, 4, device=device)
+          assert warp_affine(batched, M.expand(2, 2, 3), (0, 4)).shape == (2, 1, 0, 4)
+          print("batched OK")
+          EOF
+      - name: Full imgwarp suite on MPS (kornia CI parity, no fallback)
+        run: python -m pytest tests/geometry/transform/test_imgwarp.py --device=mps -q
