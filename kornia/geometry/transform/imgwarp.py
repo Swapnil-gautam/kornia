@@ -128,24 +128,32 @@ def _empty_warp_output_2d(
         raise RuntimeError(f"Expected src and {operand} with the same dtype, got {src.dtype} and {transform.dtype}.")
     if src.dtype != transform.dtype:
         transform = transform.to(src.dtype)
-    grid_zero = transform.reshape(-1)[:1].sum() * 0.0
-    grid = grid_zero.reshape(1, 1, 1, 1).expand(transform.shape[0], dsize[0], dsize[1], 2)
+    out_batch = transform.shape[0]
     if expand_transform_batch and transform.shape[0] == 1 and src.shape[0] > 1:
-        grid = grid.expand(src.shape[0], -1, -1, -1)
+        out_batch = src.shape[0]
 
-    # ``grid_sample`` rejects an empty source even when the destination is also empty. Validate
-    # all its other contracts against a connected 1x1 stand-in so the public empty-source policy
-    # remains useful without silently accepting invalid batches, dtypes, devices, or modes.
-    sample_src = src
-    if src.shape[-2] == 0 or src.shape[-1] == 0:
-        src_zero = src.reshape(-1)[:1].sum() * 0.0
-        sample_src = src_zero.reshape(1, 1, 1, 1).expand(src.shape[0], src.shape[1], 1, 1)
+    # ``grid_sample`` must never receive a zero-element operand here. MPS before torch 2.14 raises
+    # ``[srcBuf length] > 0 ... Placeholder tensor is empty!`` for a zero-element grid or batch, even
+    # against a 1x1 source, and kornia supports torch >= 2.0. Sample connected 1x1 stand-ins --
+    # clamping every zero dimension to one, keeping the non-zero ones so batch, dtype, device and
+    # mode validation still runs -- then expand the sampled result to the empty destination, which
+    # keeps the autograd links to ``src`` and ``transform``.
+    grid_zero = transform.reshape(-1)[:1].sum() * 0.0
+    grid = grid_zero.reshape(1, 1, 1, 1).expand(max(out_batch, 1), max(dsize[0], 1), max(dsize[1], 1), 2)
+
+    src_zero = src.reshape(-1)[:1].sum() * 0.0
+    sample_src = src_zero.reshape(1, 1, 1, 1).expand(
+        max(src.shape[0], 1), max(src.shape[1], 1), max(src.shape[-2], 1), max(src.shape[-1], 1)
+    )
 
     if padding_mode == "fill" and allow_fill:
         if fill_value is None:
             fill_value = torch.zeros(src.shape[1], device=src.device, dtype=src.dtype)
-        return _fill_and_warp(sample_src, grid, align_corners=align_corners, mode=mode, fill_value=fill_value)
-    return F.grid_sample(sample_src, grid, align_corners=align_corners, mode=mode, padding_mode=padding_mode)
+        sampled = _fill_and_warp(sample_src, grid, align_corners=align_corners, mode=mode, fill_value=fill_value)
+    else:
+        sampled = F.grid_sample(sample_src, grid, align_corners=align_corners, mode=mode, padding_mode=padding_mode)
+    out_zero = sampled.reshape(-1)[:1].sum() * 0.0
+    return out_zero.reshape(1, 1, 1, 1).expand(out_batch, src.shape[1], dsize[0], dsize[1])
 
 
 def _empty_warp_output_3d(

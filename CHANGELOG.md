@@ -135,6 +135,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests — a physical M1 on macOS 26 compiles them fine. kornia still supports torch 2.5.1, so the
   in-tree MPS workarounds stay. (#4202)
 
+### Bug fixes
+
+* `warp_affine`, `warp_perspective` and `remap` crashed on MPS for an empty destination -- a `dsize`
+  with a zero dimension, zero-sized `remap` maps, or a zero-sized batch -- with an internal
+  `[srcBuf length] > 0 INTERNAL ASSERT FAILED ... Placeholder tensor is empty!` from PyTorch. The MPS
+  backend rejects *any* zero-element `grid_sample` operand before torch 2.14, including a zero-element
+  grid sampled against a non-empty source, which is what the empty-destination path built. The empty
+  path now samples connected 1x1 stand-ins -- every zero dimension clamped to one, non-zero dimensions
+  preserved so batch, dtype, device and mode validation still runs -- and expands the sampled result to
+  the empty destination, so `grid_sample` never receives a zero-element operand on any backend. Outputs,
+  autograd links and the documented empty-source policy are unchanged on CPU and CUDA. (#4032)
+
 ### Breaking changes
 
 * `kornia_rs>=0.1.14` is required; the floor used to be 0.1.9. kornia_rs 0.1.11 relocated its image I/O
